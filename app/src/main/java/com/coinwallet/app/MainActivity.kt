@@ -1,4 +1,5 @@
 package com.coinwallet.app
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.graphics.*
@@ -448,7 +449,7 @@ private fun MarketDashboard(
     }
 
     LazyColumn(
-        modifier = Modifier.weight(1f),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         items(coins, key = { it.id }) { coin ->
