@@ -1,377 +1,957 @@
 package com.coinwallet.app
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.shape.CircleShape
+import android.graphics.BitmapFactory
 
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.*
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.NumberFormat
+import java.util.Locale
 
-private val Bg = Color(0xFF050A18)
-private val Surface = Color(0xFF0E172B)
-private val Surface2 = Color(0xFF14213A)
-private val Stroke = Color(0xFF24334D)
-private val Cyan = Color(0xFF16B8F2)
-private val TextMuted = Color(0xFF91A0B8)
-private val Up = Color(0xFF51D6B0)
-private val Down = Color(0xFFEF8CA6)
-
-data class Asset(val name:String,val symbol:String,val price:String,val change:String,val up:Boolean,val glyph:String)
-private val assets = listOf(
-    Asset("Bitcoin","BTC","$80,184.00","+2.52%",true,"₿"),
-    Asset("Ethereum","ETH","$2,416.08","+4.10%",true,"◆"),
-    Asset("Tether","USDT","$0.9994","+0.04%",true,"₮"),
-    Asset("BNB","BNB","$714.37","+2.04%",true,"⬡"),
-    Asset("Solana","SOL","$96.30","+3.30%",true,"≋"),
-    Asset("XRP","XRP","$1.32","+2.42%",true,"𝕏"),
-    Asset("USDC","USDC","$0.9997","+0.03%",true,"＄"),
-    Asset("Cardano","ADA","$0.1972","+3.38%",true,"●"),
-    Asset("TRON","TRX","$0.3183","-0.17%",false,"△"),
-    Asset("JUST","JST","$0.1426","+1.41%",true,"J"),
-    Asset("Dogecoin","DOGE","$0.0767","+2.19%",true,"Ð"),
-    Asset("Shiba Inu","SHIB","$0.00000476","+1.85%",true,"🐕"),
-    Asset("Pepe","PEPE","$0.00000494","-1.28%",false,"🐸"),
-    Asset("Bonk","BONK","$0.00000302","-0.95%",false,"🐶"),
-    Asset("Chainlink","LINK","$11.50","+3.32%",true,"⬡"),
-    Asset("Avalanche","AVAX","$8.72","+0.88%",true,"▲")
+data class Coin(
+    val id: String,
+    val name: String,
+    val symbol: String,
+    val image: String,
+    val price: Double,
+    val change: Double,
+    val marketCap: Double,
+    val volume: Double,
+    val high: Double,
+    val low: Double
 )
 
-class MainActivity:ComponentActivity(){
-    override fun onCreate(savedInstanceState:Bundle?){
+data class Holding(
+    val id: String,
+    val name: String,
+    val symbol: String,
+    val quantity: Double,
+    val buyPrice: Double
+)
+
+object MarketApi {
+
+    private fun request(urlText: String): String {
+        val connection = URL(urlText).openConnection() as HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        connection.setRequestProperty("Accept", "application/json")
+
+        return try {
+            if (connection.responseCode !in 200..299) {
+                throw Exception("API error: HTTP ${connection.responseCode}")
+            }
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    fun getMarkets(): List<Coin> {
+        val url = "https://api.coingecko.com/api/v3/coins/markets" +
+                "?vs_currency=usd&order=market_cap_desc" +
+                "&per_page=100&page=1&sparkline=false" +
+                "&price_change_percentage=24h"
+
+        val json = JSONArray(request(url))
+        val result = mutableListOf<Coin>()
+
+        for (i in 0 until json.length()) {
+            val item = json.getJSONObject(i)
+
+            result.add(
+                Coin(
+                    id = item.optString("id"),
+                    name = item.optString("name"),
+                    symbol = item.optString("symbol").uppercase(),
+                    image = item.optString("image"),
+                    price = item.optDouble("current_price"),
+                    change = item.optDouble("price_change_percentage_24h"),
+                    marketCap = item.optDouble("market_cap"),
+                    volume = item.optDouble("total_volume"),
+                    high = item.optDouble("high_24h"),
+                    low = item.optDouble("low_24h")
+                )
+            )
+        }
+
+        return result
+    }
+
+    fun getChart(coinId: String, days: String): List<Double> {
+        val url = "https://api.coingecko.com/api/v3/coins/$coinId/market_chart" +
+                "?vs_currency=usd&days=$days"
+
+        val json = JSONObject(request(url))
+        val prices = json.getJSONArray("prices")
+        val result = mutableListOf<Double>()
+
+        for (i in 0 until prices.length()) {
+            result.add(prices.getJSONArray(i).getDouble(1))
+        }
+
+        return result
+    }
+}
+
+class MainActivity : ComponentActivity() {
+
+    private val coins = mutableStateListOf<Coin>()
+    private val holdings = mutableStateListOf<Holding>()
+
+    private var loading by mutableStateOf(false)
+    private var errorMessage by mutableStateOf("")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { CoinWalletApp() }
+
+        loadHoldings()
+
+        setContent {
+            MaterialTheme {
+                CoinWalletScreen(
+                    coins = coins,
+                    holdings = holdings,
+                    loading = loading,
+                    errorMessage = errorMessage,
+                    onRefresh = { loadMarkets() },
+                    onAddHolding = { holding -> addHolding(holding) },
+                    onRemoveHolding = { id -> removeHolding(id) }
+                )
+            }
+        }
+
+        loadMarkets()
+    }
+
+    private fun loadMarkets() {
+        if (loading) return
+
+        loading = true
+        errorMessage = ""
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val result = MarketApi.getMarkets()
+
+                withContext(Dispatchers.Main) {
+                    coins.clear()
+                    coins.addAll(result)
+                    loading = false
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    errorMessage = e.message ?: "Unable to load market data"
+                    loading = false
+                }
+            }
+        }
+    }
+
+    private fun loadHoldings() {
+        val prefs = getSharedPreferences("coinwallet", MODE_PRIVATE)
+        val saved = prefs.getString("holdings", "[]") ?: "[]"
+
+        try {
+            val array = JSONArray(saved)
+            holdings.clear()
+
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+
+                holdings.add(
+                    Holding(
+                        id = item.optString("id"),
+                        name = item.optString("name"),
+                        symbol = item.optString("symbol"),
+                        quantity = item.optDouble("quantity"),
+                        buyPrice = item.optDouble("buyPrice")
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            holdings.clear()
+        }
+    }
+
+    private fun saveHoldings() {
+        val array = JSONArray()
+
+        holdings.forEach { holding ->
+            val item = JSONObject()
+            item.put("id", holding.id)
+            item.put("name", holding.name)
+            item.put("symbol", holding.symbol)
+            item.put("quantity", holding.quantity)
+            item.put("buyPrice", holding.buyPrice)
+            array.put(item)
+        }
+
+        getSharedPreferences("coinwallet", MODE_PRIVATE)
+            .edit()
+            .putString("holdings", array.toString())
+            .apply()
+    }
+
+    private fun addHolding(holding: Holding) {
+        holdings.add(holding)
+        saveHoldings()
+    }
+
+    private fun removeHolding(id: String) {
+        holdings.removeAll { it.id == id }
+        saveHoldings()
+    }
+}
+
+// COINWALLET MAIN DASHBOARD
+
+private val walletBackground = Color(0xFF0B1424)
+private val walletCard = Color(0xFF132139)
+private val walletSurface2 = Color(0xFF1A2942)
+private val walletStroke = Color(0xFF293B56)
+private val walletCyan = Color(0xFF35C5F4)
+private val walletGreen = Color(0xFF42D6A4)
+private val walletRed = Color(0xFFFF718B)
+private val walletText = Color(0xFFF3F6FF)
+private val walletMuted = Color(0xFF9BAAC0)
+
+@Composable
+fun CoinWalletScreen(
+    coins: List<Coin>,
+    holdings: List<Holding>,
+    loading: Boolean,
+    errorMessage: String,
+    onRefresh: () -> Unit,
+    onAddHolding: (Holding) -> Unit,
+    onRemoveHolding: (String) -> Unit
+) {
+    var selectedTab by remember { mutableStateOf("Market") }
+    var search by remember { mutableStateOf("") }
+    var selectedCoin by remember { mutableStateOf<Coin?>(null) }
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    val filteredCoins = coins.filter {
+        it.name.contains(search, true) ||
+        it.symbol.contains(search, true)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = walletBackground
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp)
+        ) {
+            Spacer(Modifier.height(22.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        "COINWALLET",
+                        color = walletGreen,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Your crypto dashboard",
+                        color = walletText,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                TextButton(onClick = onRefresh) {
+                    Text("↻ Refresh", color = walletCyan
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(walletCard, RoundedCornerShape(16.dp))
+                    .padding(5.dp)
+            ) {
+                listOf("Market", "Portfolio").forEach { tab ->
+                    val active = selectedTab == tab
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(
+                                if (active) Color(0xFF263A50)
+                                else Color.Transparent,
+                                RoundedCornerShape(12.dp)
+                            )
+                            .clickable {
+                                selectedTab = tab
+                                selectedCoin = null
+                            }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            tab,
+                            color = if (active) walletGreen else walletMuted,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            if (selectedCoin != null) {
+                CoinDetailScreen(
+                    coin = selectedCoin!!,
+                    onBack = { selectedCoin = null }
+                )
+            } else if (selectedTab == "Market") {
+
+                MarketDashboard(
+                    coins = filteredCoins,
+                    search = search,
+                    onSearchChange = { search = it },
+                    loading = loading,
+                    errorMessage = errorMessage,
+                    onSelectCoin = { selectedCoin = it },
+                    onRefresh = onRefresh
+                )
+
+            } else {
+
+                PortfolioDashboard(
+                    holdings = holdings,
+                    coins = coins,
+                    onAdd = { showAddDialog = true },
+                    onRemove = onRemoveHolding
+                )
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddHoldingDialog(
+            onDismiss = { showAddDialog = false },
+            onSave = {
+                onAddHolding(it)
+                showAddDialog = false
+            }
+        )
     }
 }
 
 @Composable
-private fun CoinWalletApp(){
-    var authenticated by remember { mutableStateOf(false) }
-    var createMode by remember { mutableStateOf(false) }
-    var page by remember { mutableStateOf("Home") }
-    var selected by remember { mutableStateOf(assets[9]) }
-    var search by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf("All") }
-    MaterialTheme(colorScheme=darkColorScheme(
-        background=Bg, surface=Surface, primary=Cyan,
-        onBackground=Color.White, onSurface=Color.White
-    )){
-        Surface(Modifier.fillMaxSize(),color=Bg){
-            if(!authenticated) LoginScreen(createMode,{createMode=it},{authenticated=true})
-            else when(page){
-                "Asset" -> AssetScreen(selected){page="Home"}
-                "Receive" -> ReceiveScreen{page="Home"}
-                "Send" -> SendScreen{page="Home"}
-                "Swap" -> SwapScreen{page="Home"}
-                "Activity" -> ActivityScreen{page="Home"}
-                "Address book" -> ContactsScreen{page="Home"}
-                "Alerts" -> AlertsScreen{page="Home"}
-                "Settings" -> SettingsScreen{page="Home"}
-                "Add token" -> AddTokenScreen{page="Home"}
-                else -> Dashboard(
-                    search,{search=it},filter,{filter=it},
-                    {selected=it;page="Asset"},{page=it},{authenticated=false}
+private fun MarketDashboard(
+    coins: List<Coin>,
+    search: String,
+    onSearchChange: (String) -> Unit,
+    loading: Boolean,
+    errorMessage: String,
+    onSelectCoin: (Coin) -> Unit,
+    onRefresh: () -> Unit
+) {
+    Text(
+        "Cryptocurrency Market",
+        color = walletText,
+        fontSize = 19.sp,
+        fontWeight = FontWeight.Bold
+    )
+
+    Spacer(Modifier.height(12.dp))
+
+    OutlinedTextField(
+        value = search,
+        onValueChange = onSearchChange,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { Text("Search Bitcoin, Ethereum...") },
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = walletText,
+            unfocusedTextColor = walletText,
+            focusedBorderColor = walletGreen,
+            unfocusedBorderColor = walletMuted,
+            focusedLabelColor = walletGreen,
+            cursorColor = walletGreen
+        )
+    )
+
+    Spacer(Modifier.height(14.dp))
+
+    if (loading && coins.isEmpty()) {
+        Box(
+            Modifier.fillMaxWidth().padding(35.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = walletGreen)
+        }
+    }
+
+    if (errorMessage.isNotBlank()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(walletCard, RoundedCornerShape(12.dp))
+                .padding(14.dp)
+        ) {
+            Text(
+                "Market data unavailable",
+                color = walletRed,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                errorMessage,
+                color = walletMuted,
+                fontSize = 12.sp
+            )
+            TextButton(onClick = onRefresh) {
+                Text("Try again", color = walletGreen)
+            }
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("Coin", color = walletMuted, fontSize = 12.sp)
+        Text("Price / 24h", color = walletMuted, fontSize = 12.sp)
+    }
+
+    LazyColumn(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        items(coins, key = { it.id }) { coin ->
+            CoinMarketRow(
+                coin = coin,
+                onClick = { onSelectCoin(coin) }
+            )
+        }
+
+        if (!loading && coins.isEmpty() && errorMessage.isBlank()) {
+            item {
+                Text(
+                    "No coins found.",
+                    color = walletMuted,
+                    modifier = Modifier.padding(20.dp)
                 )
             }
         }
     }
 }
 
+
 @Composable
-private fun LoginScreen(create:Boolean,onMode:(Boolean)->Unit,onEnter:()->Unit){
-    var email by remember{mutableStateOf("")}
-    var password by remember{mutableStateOf("")}
-    Column(Modifier.fillMaxSize().padding(22.dp),verticalArrangement=Arrangement.Center){
-        Row(verticalAlignment=Alignment.CenterVertically){
-            BrandMark(54)
-            Spacer(Modifier.width(13.dp))
-            Column { Text("Coin Wallet",fontSize=26.sp,fontWeight=FontWeight.Bold);Text("Your crypto overview",color=TextMuted) }
+private fun CoinAvatar(imageUrl: String, symbol: String) {
+    var bitmap by remember(imageUrl) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+
+    LaunchedEffect(imageUrl) {
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                java.net.URL(imageUrl).openStream().use {
+                    BitmapFactory.decodeStream(it)
+                }
+            }.getOrNull()
         }
-        Spacer(Modifier.height(34.dp))
-        PanelCard {
-            Row(Modifier.fillMaxWidth().background(Bg,CircleShape).padding(4.dp)){
-                Segment("Sign in",!create,Modifier.weight(1f)){onMode(false)}
-                Segment("Create account",create,Modifier.weight(1f)){onMode(true)}
-            }
-            Spacer(Modifier.height(20.dp))
-            Text("EMAIL ADDRESS",color=TextMuted,fontSize=12.sp,fontWeight=FontWeight.SemiBold)
-            OutlinedTextField(email,{email=it},modifier=Modifier.fillMaxWidth(),placeholder={Text("name@example.com")},singleLine=true,shape=RoundedCornerShape(15.dp))
-            Spacer(Modifier.height(13.dp))
-            Text("PASSWORD",color=TextMuted,fontSize=12.sp,fontWeight=FontWeight.SemiBold)
-            OutlinedTextField(password,{password=it},modifier=Modifier.fillMaxWidth(),placeholder={Text("At least 8 characters")},visualTransformation=PasswordVisualTransformation(),singleLine=true,shape=RoundedCornerShape(15.dp))
-            Spacer(Modifier.height(20.dp))
-            Button(onClick=onEnter,modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(15.dp),colors=ButtonDefaults.buttonColors(containerColor=Cyan)){
-                Text(if(create)"Continue in demo" else "Sign in to demo",color=Bg,fontWeight=FontWeight.Bold,fontSize=16.sp)
-            }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(walletSurface2),
+        contentAlignment = Alignment.Center
+    ) {
+        val image = bitmap
+        if (image != null) {
+            androidx.compose.foundation.Image(
+                bitmap = image.asImageBitmap(),
+                contentDescription = "$symbol logo",
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                symbol.take(3),
+                color = walletCyan,
+                fontWeight = FontWeight.Bold
+            )
         }
-        Spacer(Modifier.height(15.dp))
-        Text("Demo interface only. No credentials are sent or saved.",color=TextMuted,fontSize=12.sp)
     }
 }
 
 @Composable
-private fun Dashboard(search:String,onSearch:(String)->Unit,filter:String,onFilter:(String)->Unit,onAsset:(Asset)->Unit,onPage:(String)->Unit,onLogout:()->Unit){
-    val visible=assets.filter{("${it.name} ${it.symbol}").contains(search,true)}.filter{
-        when(filter){
-            "TRON"->it.name=="TRON"||it.name=="JUST"
-            "Meme"->it.name in listOf("Dogecoin","Shiba Inu","Pepe","Bonk")
-            "Major"->it.name in listOf("Bitcoin","Ethereum","BNB","Solana","XRP")
-            else->true
+private fun CoinMarketRow(
+    coin: Coin,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(walletCard, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CoinAvatar(coin.image, coin.symbol)
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                coin.name,
+                color = walletText,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+            Text(
+                coin.symbol,
+                color = walletMuted,
+                fontSize = 12.sp
+            )
         }
-    }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal=17.dp),verticalArrangement=Arrangement.spacedBy(14.dp),contentPadding=PaddingValues(top=22.dp,bottom=30.dp)){
-        item{
-            Row(verticalAlignment=Alignment.CenterVertically){
-                BrandMark(43);Spacer(Modifier.width(11.dp))
-                Column(Modifier.weight(1f)){Text("Coin Wallet",fontSize=21.sp,fontWeight=FontWeight.Bold);Text("Portfolio overview",color=TextMuted,fontSize=13.sp)}
-                IconButton(onClick={onPage("Activity")}){Icon(Icons.Default.ReceiptLong,null,tint=TextMuted)}
-                IconButton(onClick=onLogout){Icon(Icons.Default.Logout,null,tint=TextMuted)}
-            }
+
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                formatUsd(coin.price),
+                color = walletText,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                String.format(Locale.US, "%.2f%%", coin.change),
+                color = if (coin.change >= 0) walletGreen else walletRed,
+                fontSize = 12.sp
+            )
         }
-        item{
-            PanelCard(gradient=true){
-                Text("TOTAL WALLET VALUE",color=TextMuted,fontSize=12.sp,fontWeight=FontWeight.SemiBold)
-                Row(verticalAlignment=Alignment.CenterVertically){
-                    Text("$89.79",fontSize=39.sp,fontWeight=FontWeight.Bold,modifier=Modifier.weight(1f))
-                    Tag("+1.45% 24h",Up)
-                }
-                Text("Across 1 sample holding",color=TextMuted)
-                TextButton(onClick={onPage("Activity")}){Text("View activity")}
-            }
-        }
-        item{
-            PanelCard{
-                Row(verticalAlignment=Alignment.CenterVertically){
-                    Text("🔥",fontSize=23.sp);Spacer(Modifier.width(8.dp))
-                    Column{Text("Meme movers",fontWeight=FontWeight.Bold,fontSize=19.sp);Text("Biggest 24h moves",color=TextMuted,fontSize=13.sp)}
-                }
-                Text("↗  TOP GAINERS",color=Up,fontWeight=FontWeight.Bold,fontSize=13.sp)
-                listOf(assets[12],assets[10],assets[11]).forEach{MoverRow(it,onAsset)}
-                Text("↘  TOP DECLINERS",color=Down,fontWeight=FontWeight.Bold,fontSize=13.sp)
-                listOf(assets[13],assets[12]).forEach{MoverRow(it,onAsset)}
-            }
-        }
-        item{
-            Row(horizontalArrangement=Arrangement.spacedBy(9.dp)){
-                ActionTile("Receive",Icons.Default.ArrowDownward,Modifier.weight(1f)){onPage("Receive")}
-                ActionTile("Send",Icons.Default.ArrowUpward,Modifier.weight(1f)){onPage("Send")}
-                ActionTile("Swap",Icons.Default.SwapHoriz,Modifier.weight(1f)){onPage("Swap")}
-            }
-        }
-        item{
-            Row(Modifier.fillMaxWidth().background(Surface,RoundedCornerShape(30.dp)).padding(4.dp)){
-                listOf("All","Major","TRON","Meme").forEach{Segment(it,filter==it,Modifier.weight(1f)){onFilter(it)}}
-            }
-        }
-        item{
-            OutlinedTextField(search,onSearch,modifier=Modifier.fillMaxWidth(),placeholder={Text("Search assets",color=TextMuted)},leadingIcon={Icon(Icons.Default.Search,null,tint=TextMuted)},singleLine=true,shape=CircleShape)
-        }
-        items(visible){asset->AssetRow(asset){onAsset(asset)}}
-        item{
-            PanelCard{
-                Text("WALLET TOOLS",fontSize=12.sp,color=TextMuted,fontWeight=FontWeight.Bold)
-                ToolItem("Transaction history",Icons.Default.ReceiptLong){onPage("Activity")}
-                ToolItem("Address book",Icons.Default.Contacts){onPage("Address book")}
-                ToolItem("Price alerts",Icons.Default.NotificationsActive){onPage("Alerts")}
-                ToolItem("Add custom token",Icons.Default.AddCircleOutline){onPage("Add token")}
-                ToolItem("Settings & security",Icons.Default.Settings){onPage("Settings")}
-            }
-        }
-        item{Text("Market figures and portfolio values are illustrative sample data.",color=TextMuted,fontSize=11.sp)}
     }
 }
 
-@Composable private fun AssetScreen(asset:Asset,back:()->Unit){
-    Column(Modifier.fillMaxSize().padding(18.dp)){
-        BackBar("All assets",back);Spacer(Modifier.height(28.dp))
-        Row(verticalAlignment=Alignment.CenterVertically){CoinIcon(asset);Spacer(Modifier.width(13.dp));Column{Text(asset.symbol+" · MARKET",color=TextMuted);Text(asset.name,fontSize=30.sp,fontWeight=FontWeight.Bold)}}
-        Spacer(Modifier.height(25.dp));Text(asset.price,fontSize=42.sp,fontWeight=FontWeight.Bold);Tag(asset.change+" 24h",if(asset.up)Up else Down)
-        Spacer(Modifier.height(22.dp))
-        PanelCard{
-            Text("Price history",fontSize=19.sp,fontWeight=FontWeight.Bold)
-            Text("1D       7D       1M       3M       1Y",color=Cyan)
-            Spacer(Modifier.height(35.dp))
-            Text("Connect a verified market-data source to display live charts.",color=TextMuted)
-            Spacer(Modifier.height(60.dp))
-        }
+@Composable
+private fun PortfolioDashboard(
+    holdings: List<Holding>,
+    coins: List<Coin>,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    val totalValue = holdings.sumOf { holding ->
+        val current = coins.find {
+            it.symbol.equals(holding.symbol, true)
+        }?.price ?: holding.buyPrice
+
+        holding.quantity * current
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Text(
+            "My Portfolio",
+            color = walletText,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){Metric("24h high","—",Modifier.weight(1f));Metric("24h low","—",Modifier.weight(1f))}
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){Metric("Market cap","—",Modifier.weight(1f));Metric("24h volume","—",Modifier.weight(1f))}
-    }
-}
 
-@Composable private fun ReceiveScreen(back:()->Unit){
-    val ctx=LocalContext.current
-    Column(Modifier.fillMaxSize().padding(20.dp)){
-        BackBar("Receive",back)
-        PanelCard{
-            Icon(Icons.Default.QrCode2,null,tint=Cyan,modifier=Modifier.size(70.dp).align(Alignment.CenterHorizontally))
-            Text("Receive crypto",fontSize=22.sp,fontWeight=FontWeight.Bold)
-            Text("Select a network and use the matching address. A real address is not available in this prototype.",color=TextMuted)
-            Button(onClick={Toast.makeText(ctx,"No wallet address configured",Toast.LENGTH_LONG).show()},modifier=Modifier.fillMaxWidth()){Text("Copy address · unavailable")}
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(walletCard, RoundedCornerShape(18.dp))
+                .padding(18.dp)
+        ) {
+            Text("Estimated portfolio value", color = walletMuted)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                formatUsd(totalValue),
+                color = walletGreen,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "Based on your manually entered holdings",
+                color = walletMuted,
+                fontSize = 11.sp
+            )
         }
-        Text("Always verify the network before receiving. Never share your recovery phrase.",color=TextMuted)
-    }
-}
 
-@Composable private fun SendScreen(back:()->Unit){
-    val ctx=LocalContext.current
-    var recipient by remember{mutableStateOf("")};var amount by remember{mutableStateOf("")};var network by remember{mutableStateOf("TRON")}
-    Column(Modifier.fillMaxSize().padding(20.dp)){
-        BackBar("Send crypto",back)
-        PanelCard{
-            Text("Recipient address",color=TextMuted)
-            OutlinedTextField(recipient,{recipient=it},modifier=Modifier.fillMaxWidth(),placeholder={Text("Paste wallet address")})
-            Text("Network",color=TextMuted)
-            var expanded by remember{mutableStateOf(false)}
-            Box{OutlinedButton(onClick={expanded=true}){Text(network);Icon(Icons.Default.ArrowDropDown,null)}
-                DropdownMenu(expanded,{expanded=false}){listOf("TRON","Ethereum","Solana","BNB Chain").forEach{DropdownMenuItem(text={Text(it)},onClick={network=it;expanded=false})}}}
-            Text("Amount",color=TextMuted)
-            OutlinedTextField(amount,{amount=it},modifier=Modifier.fillMaxWidth(),placeholder={Text("0.00")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-            Button(onClick={Toast.makeText(ctx,"Demo only: no transaction is signed or sent",Toast.LENGTH_LONG).show()},modifier=Modifier.fillMaxWidth()){Text("Review transfer")}
+        Spacer(Modifier.height(14.dp))
+
+        Button(
+            onClick = onAdd,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = walletGreen,
+                contentColor = Color.Black
+            )
+        ) {
+            Text("+ Add asset", fontWeight = FontWeight.Bold)
         }
-        Text("Check the recipient and network carefully. Sending crypto is generally irreversible.",color=TextMuted,fontSize=12.sp)
-    }
-}
 
-@Composable private fun SwapScreen(back:()->Unit){
-    val ctx=LocalContext.current;var amount by remember{mutableStateOf("")}
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Swap assets",back)
-        PanelCard{
-            Text("From · USDT",color=TextMuted);OutlinedTextField(amount,{amount=it},modifier=Modifier.fillMaxWidth(),placeholder={Text("Amount")})
-            Icon(Icons.Default.SwapVert,null,tint=Cyan,modifier=Modifier.align(Alignment.CenterHorizontally).size(32.dp))
-            Text("To · TRX",color=TextMuted);Text("Estimated output: unavailable",color=TextMuted)
-            Button(onClick={Toast.makeText(ctx,"A verified DEX quote provider is required",Toast.LENGTH_LONG).show()},modifier=Modifier.fillMaxWidth()){Text("Get quote")}
+        Spacer(Modifier.height(12.dp))
+
+        if (holdings.isEmpty()) {
+            Text(
+                "No assets added yet. Add your first asset.",
+                color = walletMuted,
+                modifier = Modifier.padding(12.dp)
+            )
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                items(holdings, key = { it.id }) { holding ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(walletCard, RoundedCornerShape(14.dp))
+                            .padding(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    holding.name,
+                                    color = walletText,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    holding.symbol,
+                                    color = walletMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            TextButton(onClick = { onRemove(holding.id) }) {
+                                Text("Remove", color = walletRed)
+                            }
+                        }
+
+                        Text(
+                            "Quantity: ${holding.quantity}",
+                            color = walletMuted
+                        )
+                    }
+                }
+            }
         }
     }
 }
 
-@Composable private fun ActivityScreen(back:()->Unit){
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Activity",back);PanelCard{
-        Text("Recent activity",fontSize=21.sp,fontWeight=FontWeight.Bold)
-        listOf("Received · example","+$25.00 USDT","Sent · example","−10.00 TRX","Swap · example","USDT → TRX").chunked(2).forEach{
-            HorizontalDivider(color=Stroke);Text(it[0],fontWeight=FontWeight.SemiBold);Text(it[1],color=TextMuted)
+private fun formatUsd(value: Double): String {
+    return if (value >= 1.0) {
+        String.format(Locale.US, "$%,.2f", value)
+    } else {
+        String.format(Locale.US, "$%.8f", value)
+    }
+}
+
+// INDIVIDUAL COIN DETAILS AND PRICE CHART
+
+@Composable
+private fun CoinDetailScreen(
+    coin: Coin,
+    onBack: () -> Unit
+) {
+    var selectedDays by remember { mutableStateOf("7") }
+    var prices by remember(coin.id) { mutableStateOf<List<Double>>(emptyList()) }
+    var loadingChart by remember(coin.id) { mutableStateOf(false) }
+    var chartError by remember(coin.id) { mutableStateOf("") }
+
+    LaunchedEffect(coin.id, selectedDays) {
+        loadingChart = true
+        chartError = ""
+
+        try {
+            val result = withContext(Dispatchers.IO) {
+                MarketApi.getChart(coin.id, selectedDays)
+            }
+            prices = result
+        } catch (e: Exception) {
+            chartError = e.message ?: "Chart unavailable"
+        } finally {
+            loadingChart = false
         }
-        Text("Example entries only; no blockchain history is connected.",color=TextMuted,fontSize=12.sp)
-    }}
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TextButton(onClick = onBack) {
+            Text("← Back to market", color = walletGreen)
+        }
+
+        Text(
+            coin.name,
+            color = walletText,
+            fontSize = 25.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(coin.symbol, color = walletMuted)
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            formatUsd(coin.price),
+            color = walletGreen,
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            String.format(Locale.US, "%.2f%% (24h)", coin.change),
+            color = if (coin.change >= 0) walletGreen else walletRed
+        )
+
+        Spacer(Modifier.height(22.dp))
+
+        Text(
+            "Price chart",
+            color = walletText,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            listOf(
+                "1" to "1D",
+                "7" to "7D",
+                "30" to "1M",
+                "90" to "3M",
+                "365" to "1Y"
+            ).forEach { (days, label) ->
+                FilterChip(
+                    selected = selectedDays == days,
+                    onClick = { selectedDays = days },
+                    label = { Text(label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = walletGreen,
+                        selectedLabelColor = Color.Black,
+                        labelColor = walletText
+                    )
+                )
+            }
+        }
+
+        Spacer(Modifier.height(15.dp))
+
+        if (loadingChart) {
+            Box(
+                Modifier.fillMaxWidth().height(190.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = walletGreen)
+            }
+        } else if (prices.size > 1) {
+            PriceChart(
+                prices = prices,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(210.dp)
+            )
+        } else {
+            Box(
+                Modifier.fillMaxWidth().height(190.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    chartError.ifBlank { "No chart data available" },
+                    color = walletMuted
+                )
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Text(
+            "Market information",
+            color = walletText,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        DetailInfoRow("Market capitalization", formatUsd(coin.marketCap))
+        DetailInfoRow("24-hour volume", formatUsd(coin.volume))
+        DetailInfoRow("24-hour high", formatUsd(coin.high))
+        DetailInfoRow("24-hour low", formatUsd(coin.low))
+        DetailInfoRow("Current price", formatUsd(coin.price))
+        DetailInfoRow(
+            "24-hour change",
+            String.format(Locale.US, "%.2f%%", coin.change)
+        )
+
+        Spacer(Modifier.height(15.dp))
+
+        Text(
+            "Market prices are supplied by CoinGecko. Values may be delayed.",
+            color = walletMuted,
+            fontSize = 11.sp
+        )
+    }
 }
 
-@Composable private fun ContactsScreen(back:()->Unit){
-    val ctx=LocalContext.current;var name by remember{mutableStateOf("")};var addr by remember{mutableStateOf("")}
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Address book",back);PanelCard{
-        Text("Add trusted contact",fontSize=20.sp,fontWeight=FontWeight.Bold)
-        OutlinedTextField(name,{name=it},modifier=Modifier.fillMaxWidth(),label={Text("Contact name")})
-        OutlinedTextField(addr,{addr=it},modifier=Modifier.fillMaxWidth(),label={Text("Wallet address")})
-        Button(onClick={Toast.makeText(ctx,"Contact storage not enabled in prototype",Toast.LENGTH_SHORT).show()},modifier=Modifier.fillMaxWidth()){Text("Save contact")}
-    }}
+@Composable
+private fun DetailInfoRow(
+    label: String,
+    value: String
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 9.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = walletMuted)
+        Text(value, color = walletText, fontWeight = FontWeight.Bold)
+    }
 }
 
-@Composable private fun AlertsScreen(back:()->Unit){
-    var on by remember{mutableStateOf(true)};val ctx=LocalContext.current
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Price alerts",back);PanelCard{
-        Text("Alert preferences",fontSize=20.sp,fontWeight=FontWeight.Bold)
-        Row(verticalAlignment=Alignment.CenterVertically){Text("Enable alerts",Modifier.weight(1f));Switch(on,{on=it})}
-        Text("Price alert delivery requires a live market-data and notification service.",color=TextMuted)
-        OutlinedButton(onClick={Toast.makeText(ctx,"Alert provider not connected",Toast.LENGTH_SHORT).show()}){Text("Create alert")}
-    }}
+@Composable
+private fun PriceChart(
+    prices: List<Double>,
+    modifier: Modifier = Modifier
+) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        if (prices.size < 2) return@Canvas
+
+        val minPrice = prices.minOrNull() ?: return@Canvas
+        val maxPrice = prices.maxOrNull() ?: return@Canvas
+        val range = (maxPrice - minPrice).takeIf { it > 0.0 } ?: 1.0
+
+        val stepX = size.width / (prices.size - 1).toFloat()
+
+        val path = androidx.compose.ui.graphics.Path()
+
+        prices.forEachIndexed { index, price ->
+            val x = index * stepX
+            val y = size.height -
+                    ((price - minPrice) / range).toFloat() * size.height
+
+            if (index == 0) {
+                path.moveTo(x, y)
+            } else {
+                path.lineTo(x, y)
+            }
+        }
+
+        drawPath(
+            path = path,
+            color = walletGreen,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = 3.dp.toPx()
+            )
+        )
+    }
 }
 
-@Composable private fun AddTokenScreen(back:()->Unit){
-    val ctx=LocalContext.current;var contract by remember{mutableStateOf("")};var network by remember{mutableStateOf("TRON")}
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Add custom token",back);PanelCard{
-        var expanded by remember{mutableStateOf(false)}
-        Text("Network",color=TextMuted)
-        Box{OutlinedButton(onClick={expanded=true}){Text(network);Icon(Icons.Default.ArrowDropDown,null)}
-            DropdownMenu(expanded,{expanded=false}){listOf("TRON","Ethereum","Solana","BNB Chain").forEach{DropdownMenuItem(text={Text(it)},onClick={network=it;expanded=false})}}}
-        OutlinedTextField(contract,{contract=it},modifier=Modifier.fillMaxWidth(),label={Text("Contract / mint address")})
-        Button(onClick={Toast.makeText(ctx,"Token verification service not connected",Toast.LENGTH_SHORT).show()},modifier=Modifier.fillMaxWidth()){Text("Verify token")}
-    }}
-}
+// ADD CUSTOM PORTFOLIO ASSET
 
-@Composable private fun SettingsScreen(back:()->Unit){
-    var biometric by remember{mutableStateOf(false)};var hide by remember{mutableStateOf(true)};val ctx=LocalContext.current
-    Column(Modifier.fillMaxSize().padding(20.dp)){BackBar("Settings & security",back);PanelCard{
-        Text("Security preferences",fontSize=20.sp,fontWeight=FontWeight.Bold)
-        Row(verticalAlignment=Alignment.CenterVertically){Text("Biometric unlock (UI demo)",Modifier.weight(1f));Switch(biometric,{biometric=it})}
-        Row(verticalAlignment=Alignment.CenterVertically){Text("Hide balances",Modifier.weight(1f));Switch(hide,{hide=it})}
-        HorizontalDivider(color=Stroke)
-        ToolItem("Backup & recovery guidance",Icons.Default.Security){Toast.makeText(ctx,"Secure key backup must be implemented and audited before release",Toast.LENGTH_LONG).show()}
-        ToolItem("Network preferences",Icons.Default.Lan){Toast.makeText(ctx,"Network settings are demo-only",Toast.LENGTH_SHORT).show()}
-        ToolItem("Privacy information",Icons.Default.Policy){Toast.makeText(ctx,"Add a reviewed privacy policy before public release",Toast.LENGTH_SHORT).show()}
-    }
-    Text("No private keys or seed phrases are generated, imported, stored or transmitted.",color=TextMuted,fontSize=12.sp)}
-}
+@Composable
+private fun AddHoldingDialog(
+    onDismiss: () -> Unit,
+    onSave: (Holding) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var symbol by remember { mutableStateOf("") }
+    var quantity by remember { mutableStateOf("") }
+    var buyPrice by remember { mutableStateOf("") }
 
-@Composable private fun PanelCard(gradient:Boolean=false,content:@Composable ColumnScope.()->Unit){
-    Card(
-        modifier=Modifier.fillMaxWidth(),
-        shape=RoundedCornerShape(25.dp),
-        colors=CardDefaults.cardColors(containerColor=if(gradient)Color(0xFF10263B) else Surface),
-        border=androidx.compose.foundation.BorderStroke(1.dp,Stroke)
-    ){Column(Modifier.padding(19.dp),verticalArrangement=Arrangement.spacedBy(10.dp),content=content)}
-}
-@Composable private fun BrandMark(size:Int){
-    Box(Modifier.size(size.dp).background(Color(0xFF082B43),RoundedCornerShape(17.dp)),contentAlignment=Alignment.Center){
-        Icon(Icons.Default.AccountBalanceWallet,null,tint=Color(0xFF7DD8FF),modifier=Modifier.size((size*.55).dp))
-    }
-}
-@Composable private fun Segment(text:String,active:Boolean,modifier:Modifier=Modifier,onClick:()->Unit){
-    Box(modifier.background(if(active)Cyan else Color.Transparent,CircleShape).clickable{onClick()}.padding(vertical=11.dp,horizontal=4.dp),contentAlignment=Alignment.Center){
-        Text(text,color=if(active)Bg else TextMuted,fontWeight=FontWeight.SemiBold,fontSize=13.sp)
-    }
-}
-@Composable private fun Tag(text:String,color:Color){
-    Text(text,color=color,fontWeight=FontWeight.Bold,modifier=Modifier.background(color.copy(alpha=.13f),CircleShape).padding(horizontal=11.dp,vertical=7.dp))
-}
-@Composable private fun CoinIcon(asset:Asset){
-    Box(Modifier.size(48.dp).background(Surface2,CircleShape),contentAlignment=Alignment.Center){Text(asset.glyph,fontSize=23.sp,color=Cyan,fontWeight=FontWeight.Bold)}
-}
-@Composable private fun AssetRow(asset:Asset,onClick:()->Unit){
-    Row(Modifier.fillMaxWidth().background(Surface,RoundedCornerShape(21.dp)).clickable{onClick()}.padding(15.dp),verticalAlignment=Alignment.CenterVertically){
-        CoinIcon(asset);Spacer(Modifier.width(13.dp))
-        Column(Modifier.weight(1f)){Text(asset.name,fontSize=17.sp,fontWeight=FontWeight.Bold);Text(asset.symbol,color=TextMuted)}
-        Column(horizontalAlignment=Alignment.End){Text(asset.price,fontWeight=FontWeight.Bold,fontSize=16.sp);Text(asset.change,color=if(asset.up)Up else Down)}
-    }
-}
-@Composable private fun MoverRow(asset:Asset,onClick:(Asset)->Unit){
-    Row(Modifier.fillMaxWidth().clickable{onClick(asset)}.padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
-        CoinIcon(asset);Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){Text(asset.name,fontWeight=FontWeight.SemiBold);Text(asset.price,color=TextMuted,fontSize=12.sp)};Tag(asset.change,if(asset.up)Up else Down)
-    }
-}
-@Composable private fun ActionTile(label:String,icon:androidx.compose.ui.graphics.vector.ImageVector,modifier:Modifier=Modifier,onClick:()->Unit){
-    Card(modifier.clickable{onClick()},colors=CardDefaults.cardColors(containerColor=Surface),border=androidx.compose.foundation.BorderStroke(1.dp,Stroke),shape=RoundedCornerShape(20.dp)){
-        Column(Modifier.fillMaxWidth().padding(vertical=17.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(icon,null,tint=Color(0xFF7DD8FF),modifier=Modifier.size(27.dp));Spacer(Modifier.height(7.dp));Text(label)}
-    }
-}
-@Composable private fun ToolItem(label:String,icon:androidx.compose.ui.graphics.vector.ImageVector,onClick:()->Unit){
-    Row(Modifier.fillMaxWidth().clickable{onClick()}.padding(vertical=11.dp),verticalAlignment=Alignment.CenterVertically){
-        Icon(icon,null,tint=Cyan);Spacer(Modifier.width(12.dp));Text(label,Modifier.weight(1f));Icon(Icons.Default.ChevronRight,null,tint=TextMuted)
-    }
-}
-@Composable private fun BackBar(title:String,back:()->Unit){
-    Row(verticalAlignment=Alignment.CenterVertically){TextButton(onClick=back){Icon(Icons.Default.ArrowBack,null);Text(" Back")};Text(title,fontSize=21.sp,fontWeight=FontWeight.Bold)}
-}
-@Composable private fun Metric(title:String,value:String,modifier:Modifier=Modifier){
-    Card(modifier,colors=CardDefaults.cardColors(containerColor=Surface),border=androidx.compose.foundation.BorderStroke(1.dp,Stroke)){
-        Column(Modifier.padding(15.dp)){Text(title,color=TextMuted);Text(value,fontWeight=FontWeight.Bold,fontSize=19.sp)}
-    }
+    val valid = name.isNotBlank() &&
+            symbol.isNotBlank() &&
+            (quantity.toDoubleOrNull() ?: 0.0) > 0.0 &&
+            (buyPrice.toDoubleOrNull() ?: 0.0) >= 0.0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = walletCard,
+        title = {
+            Text("Add portfolio asset", color = walletText)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Asset name") },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = symbol,
+                    onValueChange = { symbol = it.uppercase() },
+                    label = { Text("Symbol") },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = quantity,
+                    onValueChange = { quantity = it },
+                    label = { Text("Quantity") },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = buyPrice,
+                    onValueChange = { buyPrice = it },
+                    label = { Text("Purchase price (USD)") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        Holding(
+                            id = java.util.UUID.randomUUID().toString(),
+                            name = name.trim(),
+                            symbol = symbol.trim(),
+                            quantity = quantity.toDouble(),
+                            buyPrice = buyPrice.toDouble()
+                        )
+                    )
+                },
+                enabled = valid,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = walletGreen,
+                    contentColor = Color.Black
+                )
+            ) {
+                Text("Save asset")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = walletMuted)
+            }
+        }
+    )
 }
