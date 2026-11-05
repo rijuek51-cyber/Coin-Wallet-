@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Coin Wallet Android UI prototype
 
 Native Kotlin / Jetpack Compose Android project based on the screenshots supplied by the user.
@@ -25,3 +26,8 @@ GitHub Actions workflow is included at `.github/workflows/build-apk.yml`.
 5. Download the `CoinWallet-debug-apk` artifact and install `app-debug.apk` on Android.
 
 Package ID: `com.coinwallet.app`
+=======
+# Coin-Wallet-
+Wallet 
+>>>>>>> origin/main
+
